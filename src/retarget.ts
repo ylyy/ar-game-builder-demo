@@ -57,12 +57,15 @@ const BONE_CHAIN: Partial<Record<VRMHumanBoneName, VRMHumanBoneName>> = {
  * 最终写入骨骼的本地旋转（local quaternion）。并做 slerp 低通滤波抗抖。
  *
  * 关键坐标约定（MediaPipe BlazePose GHUM worldLandmarks，米制 3D）：
- *   原点 = 髋中心；这是「世界坐标」（与图像归一化坐标不同）：
- *   X+ 指向图像右侧（person's right，与 VRM +X 同向）→ 不取反；
- *   Y+ 向上（米制世界坐标，与图像坐标的 Y 向下相反）→ 不取反（历史 bug：
- *     之前误取反导致角色整体上下颠倒、头朝下）；
- *   Z+ 指向远离相机（z 越小越靠近相机）→ 取反使其朝相机（VRM +Z 为模型正前方）。
- * 因此：x 不取反，y 不取反，z 取反。
+ *   原点 = 髋中心；这是「世界坐标」（与图像归一化坐标不同）。
+ *   权威实测参考（kiarina/labs mediapipe-holistic-vrm，可运行）的转换是：
+ *     new Vector3(mirror ? x : -x, -y, -z)
+ *   即默认 x、y、z 全部取反：
+ *     x：取反（world x+ 对应镜像后的显示方向，默认按非镜像视图处理）；
+ *     y：取反（worldLandmarks 的 Y 实际朝下，与 VRM +Y 向上相反！历史教训：
+ *        之前按"文档 Y 向上"改成不取反，导致角色上下颠倒——腿到头、头弯进胸口）；
+ *     z：取反（world z+ 远离相机，取反后朝向相机 = VRM +Z 正前方）。
+ *   mirrorX / flipY 两个调试开关在两种约定间切换。
  */
 export class Retargeter {
   private vrm: VRM;
@@ -139,11 +142,12 @@ export class Retargeter {
 
   private toVec(lm: { x: number; y: number; z: number; visibility?: number }[], idx: number): THREE.Vector3 {
     const p = lm[idx];
-    // x 不取反（MediaPipe world x+ ≈ 图像右侧 ≈ VRM +X）；
-    // y 不取反（worldLandmarks 是世界坐标、Y 向上，与 VRM +Y 同向）；
-    // z 取反（world z+ 远离相机，取反后朝向相机 = VRM +Z 正前方）。
-    const x = this.mirrorX ? -p.x : p.x;
-    const y = this.flipY ? -p.y : p.y;
+    // 对齐可运行的参考实现：默认 x/y/z 全取反（镜像/翻转Y 按钮可切换）
+    //   x：默认取反（-p.x）；开启镜像后不取反（+p.x）
+    //   y：默认取反（-p.y，worldLandmarks Y 朝下）；翻转Y 开启后不取反（+p.y）
+    //   z：始终取反（world z+ 远离相机 → 朝相机 = VRM +Z 正前方）
+    const x = this.mirrorX ? p.x : -p.x;
+    const y = this.flipY ? p.y : -p.y;
     return new THREE.Vector3(x, y, -p.z);
   }
 
