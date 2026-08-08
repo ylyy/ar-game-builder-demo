@@ -247,6 +247,23 @@ export class Retargeter {
     this.freezeUntil = performance.now() + 1200; // 状态栏文案过渡
   }
 
+  /**
+   * 把骨骼清零到 T-pose，但**不暂停追踪**。
+   * 用于 VRM 加载完成后立即调用：示例 VRM（VRM1_Constraint_Twist_Sample 等）的导出姿势
+   * 通常不是 T-pose（为了展示 twist 约束会带非零旋转），如果不主动清零，
+   * 启动后未开启摄像头时角色会停在"扭曲出厂姿势"，看起来像识别错位。
+   */
+  applyRestPose(): void {
+    for (const seg of SEGMENTS) {
+      const bone = this.vrm.humanoid?.getNormalizedBoneNode(seg.bone);
+      if (bone) bone.quaternion.identity();
+      this.smoothed.set(seg.bone, new THREE.Quaternion());
+    }
+    this.vrm.humanoid?.getNormalizedBoneNode('hips')?.position.set(0, 0, 0);
+    // 立即更新一次 scene，让渲染显示 T-pose
+    this.vrm.update(0);
+  }
+
   /** 距离冻结结束的剩余毫秒（用于 UI 显示） */
   getFreezeRemaining(): number {
     return Math.max(0, this.freezeUntil - performance.now());

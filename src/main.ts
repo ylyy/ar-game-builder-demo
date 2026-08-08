@@ -46,6 +46,10 @@ async function boot(): Promise<void> {
   setStatus('加载姿态模型…', 'load');
   const detector = await PoseDetector.create();
   const retargeter = new Retargeter(vrm);
+  // VRM 文件本身的导出姿势可能不是 T-pose（例如官方 VRM1_Constraint_Twist_Sample
+  // 为了展示 twist 约束带非零旋转），加载完先强制清零到 T-pose，避免
+  // 「没开摄像头也看到扭曲身体」这个 false alarm。
+  retargeter.applyRestPose();
   setStatus('就绪：请开启摄像头或加载真人视频', '');
   btnStart.disabled = false;
   btnMirror.disabled = false;
