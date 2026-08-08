@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>AR 游戏创建平台 · 路线A Demo</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #0e1116; color: #e6edf3; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+      #app { position: relative; width: 100%; height: 100%; }
+      #stage { position: absolute; inset: 0; }
+      #stage canvas { display: block; width: 100% !important; height: 100% !important; }
+
+      /* 右上角摄像头小窗 */
+      #cam { position: absolute; top: 16px; right: 16px; width: 220px; height: 165px; border-radius: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,0.15); background: #000; box-shadow: 0 8px 24px rgba(0,0,0,0.4); z-index: 10; }
+      #cam video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+      #cam canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0.9; }
+
+      /* 顶部状态条 */
+      #hud { position: absolute; top: 16px; left: 16px; z-index: 10; max-width: 360px; }
+      #hud h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.3px; }
+      #hud p { font-size: 12px; color: #9aa7b4; margin-top: 4px; line-height: 1.5; }
+      #status { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,0.06); }
+      #status .dot { width: 8px; height: 8px; border-radius: 50%; background: #888; }
+      #status.ok .dot { background: #3fb950; }
+      #status.load .dot { background: #d29922; }
+      #fps { font-variant-numeric: tabular-nums; color: #9aa7b4; font-size: 12px; margin-top: 6px; }
+
+      /* 底部控制 */
+      #controls { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; gap: 10px; }
+      button { font: inherit; font-size: 13px; padding: 9px 18px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); color: #e6edf3; cursor: pointer; transition: background 0.15s; }
+      button:hover { background: rgba(255,255,255,0.14); }
+      button.primary { background: #1f6feb; border-color: #1f6feb; }
+      button.primary:hover { background: #388bfd; }
+
+      #hint { position: absolute; bottom: 70px; left: 50%; transform: translateX(-50%); z-index: 10; font-size: 12px; color: #9aa7b4; text-align: center; width: 90%; }
+
+      /* 调试读数 */
+      #offset-panel { position: absolute; bottom: 16px; right: 16px; z-index: 10; font-size: 12px; color: #9aa7b4; text-align: right; line-height: 1.6; background: rgba(0,0,0,0.25); padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); }
+      #offset-panel b { color: #e6edf3; font-weight: 600; font-variant-numeric: tabular-nums; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="stage"></div>
+
+      <div id="cam">
+        <video id="video" playsinline muted></video>
+        <canvas id="overlay"></canvas>
+      </div>
+
+      <div id="hud">
+        <h1>AR 游戏创建平台 · 路线A Demo</h1>
+        <p>摄像头识别你的人体动作，实时驱动 VRM 角色。站立在摄像头前、全身入镜、双臂自然张开效果更好。</p>
+        <div id="status"><span class="dot"></span><span id="status-text">初始化中…</span></div>
+        <div id="fps">—</div>
+      </div>
+
+      <div id="hint">提示：MediaPipe Pose 只能识别<strong>真人</strong>。测试动画/卡通画面会"扭曲"，请点"开启摄像头"或上传你的真人视频。鼠标可拖动角色调整位置。</div>
+
+      <div id="offset-panel">
+        角色偏移 X <b id="off-x">0.00</b><br />
+        Y(高度) <b id="off-y">0.00</b><br />
+        Z(深度) <b id="off-z">0.00</b>
+      </div>
+
+      <div id="controls">
+        <button id="btn-start" class="primary">开启摄像头</button>
+        <button id="btn-video">加载测试视频</button>
+        <button id="btn-resetpos">重置位置</button>
+        <button id="btn-calibrate">重置姿态</button>
+        <button id="btn-resume" disabled>继续追踪</button>
+        <button id="btn-mirror" data-on="0">镜像：已关闭</button>
+        <button id="btn-flipy" data-on="0">翻转Y：已关闭</button>
+      </div>
+      <input id="file-input" type="file" accept="video/*" hidden />
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

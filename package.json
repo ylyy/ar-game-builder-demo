@@ -1,0 +1,23 @@
+{
+  "name": "ar-game-builder-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "路线A Demo: 摄像头姿态识别驱动 VRM 游戏角色 (MediaPipe Pose Landmarker + Three.js + three-vrm)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.14",
+    "@pixiv/three-vrm": "^3.4.0",
+    "three": "^0.160.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.160.0",
+    "@vitejs/plugin-basic-ssl": "^1.2.0",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.11"
+  }
+}
