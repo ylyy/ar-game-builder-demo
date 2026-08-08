@@ -112,8 +112,16 @@ export class Retargeter {
         this.restDir.set(bone as VRMHumanBoneName, localDir);
       }
     }
-    // head 无子骨骼，静止朝 +Y（相对 neck 向上）
-    this.restDir.set('head', new THREE.Vector3(0, 1, 0));
+    // head 无子骨骼，不能从子骨骼算 rest。正确做法：利用模型原始 rest 姿态下
+    // 头骨 local +Y 在父（neck）坐标系中的方向，反推出「世界/父坐标系中的向上」
+    // 对应头骨的哪个 local 轴。applyRestPose 会把头骨清零到 identity，所以 retarget
+    // 要把这个 local 轴对齐到目标竖直向量，头才能正。硬编码 (0,1,0) 只对 local+Y=up 的模型成立。
+    const headNode = vrm.humanoid?.getNormalizedBoneNode('head');
+    if (headNode) {
+      const headRestQ = headNode.quaternion.clone();
+      const headUpLocal = new THREE.Vector3(0, 1, 0).applyQuaternion(headRestQ.clone().invert());
+      this.restDir.set('head', headUpLocal);
+    }
 
     for (const seg of SEGMENTS) {
       const bn = vrm.humanoid?.getNormalizedBoneNode(seg.bone);
