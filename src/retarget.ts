@@ -22,9 +22,10 @@ const SEGMENTS: Seg[] = [
   { bone: 'chest', from: [11, 12], to: [7, 8] },
   { bone: 'upperChest', from: [11, 12], to: [7, 8] },
   { bone: 'neck', from: [11, 12], to: [7, 8] },
-  // 头部竖直轴：直接复用「肩膀 → 耳朵」这个已被验证为竖直、驱动 neck/chest 正常的
-  // 向量，保证头骨与躯干同向上。不依赖鼻子→耳朵这种短且偏前的脆弱向量，避免头骨翻扣。
-  { bone: 'head', from: [11, 12], to: [7, 8] },
+  // head 暂时不重定向：该模型头骨 rest 朝向特殊（local +Y 朝前、+X 朝上），
+  // 直接用关键点向量对齐极易翻扣或消失。保持 applyRestPose 后的 identity，
+  // 让头跟随 neck 转动即可。后续需要独立头部动作时再实现基于 look-at 的稳态头。
+  // { bone: 'head', from: [11, 12], to: [7, 8] },
   { bone: 'leftUpperArm', from: [11], to: [13] },
   { bone: 'leftLowerArm', from: [13], to: [15] },
   { bone: 'rightUpperArm', from: [12], to: [14] },
@@ -112,16 +113,9 @@ export class Retargeter {
         this.restDir.set(bone as VRMHumanBoneName, localDir);
       }
     }
-    // head 无子骨骼，不能从子骨骼算 rest。正确做法：利用模型原始 rest 姿态下
-    // 头骨 local +Y 在父（neck）坐标系中的方向，反推出「世界/父坐标系中的向上」
-    // 对应头骨的哪个 local 轴。applyRestPose 会把头骨清零到 identity，所以 retarget
-    // 要把这个 local 轴对齐到目标竖直向量，头才能正。硬编码 (0,1,0) 只对 local+Y=up 的模型成立。
-    const headNode = vrm.humanoid?.getNormalizedBoneNode('head');
-    if (headNode) {
-      const headRestQ = headNode.quaternion.clone();
-      const headUpLocal = new THREE.Vector3(0, 1, 0).applyQuaternion(headRestQ.clone().invert());
-      this.restDir.set('head', headUpLocal);
-    }
+    // head 无子骨骼，且不同 VRM 头骨 rest 朝向差异大；当前策略是保持 identity
+    //（由 applyRestPose 清零），跟随 neck 转动，不单独 retarget。
+    this.restDir.set('head', new THREE.Vector3(0, 1, 0));
 
     for (const seg of SEGMENTS) {
       const bn = vrm.humanoid?.getNormalizedBoneNode(seg.bone);
@@ -256,6 +250,8 @@ export class Retargeter {
       if (bone) bone.quaternion.identity();
       this.smoothed.set(seg.bone, new THREE.Quaternion());
     }
+    // head 已不在 SEGMENTS 里单独 retarget，但仍需清零到 identity 保持 T-pose
+    this.vrm.humanoid?.getNormalizedBoneNode('head')?.quaternion.identity();
     this.vrm.humanoid?.getNormalizedBoneNode('hips')?.position.set(0, 0, 0);
     this.paused = true;
     this.freezeUntil = performance.now() + 1200; // 状态栏文案过渡
@@ -273,6 +269,8 @@ export class Retargeter {
       if (bone) bone.quaternion.identity();
       this.smoothed.set(seg.bone, new THREE.Quaternion());
     }
+    // head 不参与 retarget，但加载后必须清零，避免出厂 twist 姿势让头歪掉
+    this.vrm.humanoid?.getNormalizedBoneNode('head')?.quaternion.identity();
     this.vrm.humanoid?.getNormalizedBoneNode('hips')?.position.set(0, 0, 0);
     // 立即更新一次 scene，让渲染显示 T-pose
     this.vrm.update(0);
