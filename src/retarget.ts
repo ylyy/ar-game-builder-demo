@@ -22,7 +22,9 @@ const SEGMENTS: Seg[] = [
   { bone: 'chest', from: [11, 12], to: [7, 8] },
   { bone: 'upperChest', from: [11, 12], to: [7, 8] },
   { bone: 'neck', from: [11, 12], to: [7, 8] },
-  { bone: 'head', from: [7, 8], to: [0] },
+  // 头部竖直轴：用「鼻子 → 耳朵」方向（朝上），不要用「耳朵 → 鼻子」，
+  // 后者方向朝前+朝下，会把头骨绕 ~90° 往前扣（脑袋弯进胸口）。
+  { bone: 'head', from: [0], to: [7, 8] },
   { bone: 'leftUpperArm', from: [11], to: [13] },
   { bone: 'leftLowerArm', from: [13], to: [15] },
   { bone: 'rightUpperArm', from: [12], to: [14] },
