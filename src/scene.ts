@@ -2,12 +2,14 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMUtils, type VRM } from '@pixiv/three-vrm';
 
-// 示例 VRM 模型：已下载到 public/models/ 本地加载（three-vrm 官方示例
-// VRM1_Constraint_Twist_Sample）。替换为你自己的模型时，放到 public/models/
-// 下并改这里的路径即可。
+// 示例 VRM 模型：已下载到 public/models/ 本地加载。
+// 注意：之前用 three-vrm 官方的 VRM1_Constraint_Twist_Sample，其头骨 rest 朝向特殊
+//（local +Y 朝前、+X 朝上），identity 后头会歪/朝下；换成 kiarina 参考实现同款
+// 标准骨骼模型 Seed-san.vrm（VRM 1.0），头部恢复正常。
+// 替换为你自己的模型时，放到 public/models/ 下并改这里的路径即可。
 // 用 import.meta.env.BASE_URL 拼接，兼容 GitHub Pages 等子路径部署（base: './'）
 export const VRM_URL =
-  import.meta.env.BASE_URL + 'models/VRM1_Constraint_Twist_Sample.vrm';
+  import.meta.env.BASE_URL + 'models/Seed-san.vrm';
 
 /** Three.js 场景：渲染器、相机、灯光、地面，并负责加载与渲染 VRM 模型 */
 export class Stage {
