@@ -16,11 +16,9 @@ interface Seg {
   to: number[];
 }
 
-// 每段骨骼由哪两个（组）关键点方向来驱动
+// 每段骨骼由哪两个（组）关键点方向来驱动（四肢/颈：单方向对齐，
+// 参考 kiarina 173fps 实现——参考实现同样不解四肢 twist，因此四肢保持单方向）
 const SEGMENTS: Seg[] = [
-  { bone: 'spine', from: [23, 24], to: [11, 12] },
-  { bone: 'chest', from: [11, 12], to: [7, 8] },
-  { bone: 'upperChest', from: [11, 12], to: [7, 8] },
   { bone: 'neck', from: [11, 12], to: [7, 8] },
   // head 暂时不重定向：该模型头骨 rest 朝向特殊（local +Y 朝前、+X 朝上），
   // 直接用关键点向量对齐极易翻扣或消失。保持 applyRestPose 后的 identity，
@@ -34,6 +32,22 @@ const SEGMENTS: Seg[] = [
   { bone: 'leftLowerLeg', from: [25], to: [27] },
   { bone: 'rightUpperLeg', from: [24], to: [26] },
   { bone: 'rightLowerLeg', from: [26], to: [28] },
+];
+
+// 躯干：用「左右髋 × 左右肩」4 点建正交 basis，按权重分配各躯干骨，
+// 参考 kiarina 173fps 实现（hips 0.55 / spine 0.25 / chest 0.20）。
+// 本模型多一根 upperChest，从 chest 里拆一部分给它。
+const TORSO_BONES: [VRMHumanBoneName, number][] = [
+  ['hips', 0.5],
+  ['spine', 0.25],
+  ['chest', 0.15],
+  ['upperChest', 0.1],
+];
+
+// 所有被驱动的骨骼（躯干 basis + 四肢/颈单方向），用于 reset / applyRestPose / 平滑缓存
+const ALL_BONES: VRMHumanBoneName[] = [
+  ...TORSO_BONES.map(([b]) => b),
+  ...SEGMENTS.map((s) => s.bone),
 ];
 
 // 子骨骼链，用于预计算每个骨骼在静止姿态下的「子骨骼相对父骨骼」的本地方向
@@ -117,9 +131,9 @@ export class Retargeter {
     //（由 applyRestPose 清零），跟随 neck 转动，不单独 retarget。
     this.restDir.set('head', new THREE.Vector3(0, 1, 0));
 
-    for (const seg of SEGMENTS) {
-      const bn = vrm.humanoid?.getNormalizedBoneNode(seg.bone);
-      if (bn) this.smoothed.set(seg.bone, bn.quaternion.clone());
+    for (const bone of ALL_BONES) {
+      const bn = vrm.humanoid?.getNormalizedBoneNode(bone);
+      if (bn) this.smoothed.set(bone, bn.quaternion.clone());
     }
   }
 
@@ -138,9 +152,9 @@ export class Retargeter {
   }
 
   private resetSmoothed(): void {
-    for (const seg of SEGMENTS) {
-      const bone = this.vrm.humanoid?.getNormalizedBoneNode(seg.bone);
-      if (bone) this.smoothed.set(seg.bone, bone.quaternion.clone());
+    for (const bone of ALL_BONES) {
+      const bn = this.vrm.humanoid?.getNormalizedBoneNode(bone);
+      if (bn) this.smoothed.set(bone, bn.quaternion.clone());
     }
   }
 
@@ -188,6 +202,52 @@ export class Retargeter {
       return n ? s / n : 0;
     };
 
+    // ============ 1) 躯干：左右髋×左右肩 4 点建正交 basis，按权重分配 ============
+    // 参考 kiarina 173fps 实现：xAxis=右髋-左髋，yAxis=肩中点-髋中点，
+    // zAxis=x×y 正交化后 makeBasis，得到躯干世界姿态四元数，再按权重 slerp 给
+    // hips/spine/chest/upperChest。这样转身、侧倾、躯干扭转都有响应。
+    if (
+      segVis([11, 12, 23, 24]) >= this.minVisibility &&
+      [11, 12, 23, 24].every((i) => world[i])
+    ) {
+      const leftHip = this.toVec(world, 23);
+      const rightHip = this.toVec(world, 24);
+      const leftShoulder = this.toVec(world, 11);
+      const rightShoulder = this.toVec(world, 12);
+
+      const hipCenter = leftHip.clone().add(rightHip).multiplyScalar(0.5);
+      const shoulderCenter = leftShoulder.clone().add(rightShoulder).multiplyScalar(0.5);
+
+      // 注意顺序与 kiarina 一致：先 x=右髋-左髋，再 y=肩-髋，z=x×y，再正交化
+      const xAxis = rightHip.clone().sub(leftHip).normalize();
+      const yAxis = shoulderCenter.clone().sub(hipCenter).normalize();
+      let zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis);
+      if (zAxis.lengthSq() < 1e-8) {
+        // 退化（如躺平/侧躺时髋肩共线）：回退到髋中点→肩中点的单方向
+        zAxis.copy(yAxis.clone().cross(new THREE.Vector3(0, 0, 1)));
+      }
+      zAxis.normalize();
+      // 重新正交化 y，保证 x/y/z 严格正交（kiarina 也这么做）
+      const yOrth = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+
+      const basis = new THREE.Matrix4().makeBasis(xAxis, yOrth, zAxis);
+      const torsoWorld = new THREE.Quaternion().setFromRotationMatrix(basis);
+
+      for (const [boneName, weight] of TORSO_BONES) {
+        const bone = humanoid.getNormalizedBoneNode(boneName);
+        if (!bone) continue;
+        const parent = bone.parent;
+        if (parent) parent.getWorldQuaternion(parentQuat);
+        else parentQuat.identity();
+        // 世界姿态按权重 slerp（从 identity 朝 torsoWorld 插值），再转父本地
+        const distributed = new THREE.Quaternion().slerp(torsoWorld, weight);
+        targetQuat.copy(parentQuat.clone().invert().multiply(distributed));
+
+        this.applySmoothed(bone, boneName, targetQuat);
+      }
+    }
+
+    // ============ 2) 四肢/颈：单方向对齐（参考实现同样不解四肢 twist） ============
     for (const seg of SEGMENTS) {
       const bone = humanoid.getNormalizedBoneNode(seg.bone);
       const rest = this.restDir.get(seg.bone);
@@ -208,23 +268,35 @@ export class Retargeter {
 
       targetQuat.setFromUnitVectors(rest, tmpLocal);
 
-      let sm = this.smoothed.get(seg.bone);
-      if (!sm) {
-        sm = new THREE.Quaternion();
-        this.smoothed.set(seg.bone, sm);
-      }
-      // 先按平滑系数插值，再限制“单帧旋转增量”，避免首帧/噪声把身体掰弯
-      const before = sm.clone();
-      const after = before.clone().slerp(targetQuat, this.smoothing);
-      const stepAngle = before.angleTo(after);
-      if (stepAngle > this.maxStep) {
-        sm.copy(before).slerp(targetQuat, this.maxStep / stepAngle);
-      } else {
-        sm.copy(after);
-      }
-      bone.quaternion.copy(sm);
+      this.applySmoothed(bone, seg.bone, targetQuat);
     }
     return true;
+  }
+
+  /**
+   * 平滑 + 单帧限幅后写入骨骼本地四元数。
+   * 统一入口，躯干与四肢共用同一套抗抖逻辑。
+   */
+  private applySmoothed(
+    bone: THREE.Object3D,
+    key: VRMHumanBoneName,
+    targetQuat: THREE.Quaternion,
+  ): void {
+    let sm = this.smoothed.get(key);
+    if (!sm) {
+      sm = new THREE.Quaternion();
+      this.smoothed.set(key, sm);
+    }
+    // 先按平滑系数插值，再限制“单帧旋转增量”，避免首帧/噪声把身体掰弯
+    const before = sm.clone();
+    const after = before.clone().slerp(targetQuat, this.smoothing);
+    const stepAngle = before.angleTo(after);
+    if (stepAngle > this.maxStep) {
+      sm.copy(before).slerp(targetQuat, this.maxStep / stepAngle);
+    } else {
+      sm.copy(after);
+    }
+    bone.quaternion.copy(sm);
   }
 
   /** 暂停追踪（保持当前骨骼姿态）；用于"重置姿态"后让角色停在 T-pose */
@@ -245,12 +317,12 @@ export class Retargeter {
 
   /** 把所有驱动骨骼复位到 T-pose，并暂停追踪 → 角色会一直停在 T-pose 直到用户点"继续追踪" */
   reset(): void {
-    for (const seg of SEGMENTS) {
-      const bone = this.vrm.humanoid?.getNormalizedBoneNode(seg.bone);
-      if (bone) bone.quaternion.identity();
-      this.smoothed.set(seg.bone, new THREE.Quaternion());
+    for (const bone of ALL_BONES) {
+      const bn = this.vrm.humanoid?.getNormalizedBoneNode(bone);
+      if (bn) bn.quaternion.identity();
+      this.smoothed.set(bone, new THREE.Quaternion());
     }
-    // head 已不在 SEGMENTS 里单独 retarget，但仍需清零到 identity 保持 T-pose
+    // head 不在 ALL_BONES 里单独 retarget，但仍需清零到 identity 保持 T-pose
     this.vrm.humanoid?.getNormalizedBoneNode('head')?.quaternion.identity();
     this.vrm.humanoid?.getNormalizedBoneNode('hips')?.position.set(0, 0, 0);
     this.paused = true;
@@ -264,10 +336,10 @@ export class Retargeter {
    * 启动后未开启摄像头时角色会停在"扭曲出厂姿势"，看起来像识别错位。
    */
   applyRestPose(): void {
-    for (const seg of SEGMENTS) {
-      const bone = this.vrm.humanoid?.getNormalizedBoneNode(seg.bone);
-      if (bone) bone.quaternion.identity();
-      this.smoothed.set(seg.bone, new THREE.Quaternion());
+    for (const bone of ALL_BONES) {
+      const bn = this.vrm.humanoid?.getNormalizedBoneNode(bone);
+      if (bn) bn.quaternion.identity();
+      this.smoothed.set(bone, new THREE.Quaternion());
     }
     // head 不参与 retarget，但加载后必须清零，避免出厂 twist 姿势让头歪掉
     this.vrm.humanoid?.getNormalizedBoneNode('head')?.quaternion.identity();
