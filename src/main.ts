@@ -1,6 +1,6 @@
 import { Stage } from './scene';
-import { PoseDetector } from './pose';
-import { Retargeter } from './retarget';
+import { HolisticDetector } from './holistic';
+import { Retargeter, type MotionFrame } from './retarget';
 
 const stage = new Stage(document.getElementById('stage')!);
 const video = document.getElementById('video') as HTMLVideoElement;
@@ -43,8 +43,8 @@ async function boot(): Promise<void> {
 
   setStatus('加载角色模型…', 'load');
   const vrm = await stage.loadVRM();
-  setStatus('加载姿态模型…', 'load');
-  const detector = await PoseDetector.create();
+  setStatus('加载姿态模型（Holistic）…', 'load');
+  const detector = await HolisticDetector.create();
   const retargeter = new Retargeter(vrm);
   // VRM 文件本身的导出姿势可能不是 T-pose（例如官方 VRM1_Constraint_Twist_Sample
   // 为了展示 twist 约束带非零旋转），加载完先强制清零到 T-pose，避免
@@ -165,9 +165,21 @@ async function boot(): Promise<void> {
 
     const canDetect = (source === 'webcam' && !!video.srcObject) || (source === 'file' && !!video.src);
     const res = canDetect ? detector.detect(video) : null;
-    if (res && res.worldLandmarks && res.worldLandmarks.length && res.landmarks?.[0]) {
-      const updated = retargeter.update(res);
-      if (updated) drawOverlay(res.landmarks[0]);
+    if (res) {
+      // 组装 MotionFrame：pose/双手用 worldLandmarks，face 用归一化 faceLandmarks
+      //（与 kiarina 参考实现一致：face 是图像坐标，blendshapes 是表情系数）
+      const pose = res.poseWorldLandmarks?.[0];
+      if (pose && pose.length >= 33) {
+        const frame: MotionFrame = {
+          pose,
+          face: res.faceLandmarks?.[0] ?? [],
+          leftHand: res.leftHandWorldLandmarks?.[0] ?? [],
+          rightHand: res.rightHandWorldLandmarks?.[0] ?? [],
+          blendshapes: res.faceBlendshapes?.[0]?.categories ?? [],
+        };
+        const updated = retargeter.update(frame);
+        if (updated && res.poseLandmarks?.[0]) drawOverlay(res.poseLandmarks[0]);
+      }
     }
     stage.render();
 
