@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { VRM, VRMHumanBoneName } from '@pixiv/three-vrm';
+import type { VRM, VRMHumanBoneName, VRMHumanoid } from '@pixiv/three-vrm';
 import type { PoseLandmarkerResult } from '@mediapipe/tasks-vision';
 
 /**
@@ -16,14 +16,11 @@ interface Seg {
   to: number[];
 }
 
-// 每段骨骼由哪两个（组）关键点方向来驱动（四肢/颈：单方向对齐，
-// 参考 kiarina 173fps 实现——参考实现同样不解四肢 twist，因此四肢保持单方向）
+// 每段骨骼由哪两个（组）关键点方向来驱动（四肢：单方向对齐，
+// 参考 kiarina 173fps 实现——参考实现同样不解四肢 twist，因此四肢保持单方向）。
+// 注意：颈/头不再走这里，改由 updateHead() 用「鼻+双耳」建正交 basis 单独驱动
+// （与 kiarina 用面部 4 点的算法同构），避免耳部弱关键点把头翻扣进胸口。
 const SEGMENTS: Seg[] = [
-  { bone: 'neck', from: [11, 12], to: [7, 8] },
-  // head 暂时不重定向：该模型头骨 rest 朝向特殊（local +Y 朝前、+X 朝上），
-  // 直接用关键点向量对齐极易翻扣或消失。保持 applyRestPose 后的 identity，
-  // 让头跟随 neck 转动即可。后续需要独立头部动作时再实现基于 look-at 的稳态头。
-  // { bone: 'head', from: [11, 12], to: [7, 8] },
   { bone: 'leftUpperArm', from: [11], to: [13] },
   { bone: 'leftLowerArm', from: [13], to: [15] },
   { bone: 'rightUpperArm', from: [12], to: [14] },
@@ -48,6 +45,8 @@ const TORSO_BONES: [VRMHumanBoneName, number][] = [
 const ALL_BONES: VRMHumanBoneName[] = [
   ...TORSO_BONES.map(([b]) => b),
   ...SEGMENTS.map((s) => s.bone),
+  'neck',
+  'head',
 ];
 
 // 子骨骼链，用于预计算每个骨骼在静止姿态下的「子骨骼相对父骨骼」的本地方向
@@ -247,7 +246,12 @@ export class Retargeter {
       }
     }
 
-    // ============ 2) 四肢/颈：单方向对齐（参考实现同样不解四肢 twist） ============
+    // ============ 1.5) 颈/头：用「鼻+双耳」建正交 basis，按权重分配 ============
+    // 移植自 kiarina（其用面部 4 点，我们用 Pose 的鼻/耳近似），确定性保证头朝上、
+    // 不翻扣。neck 0.35 / head 0.65，与 kiarina 同权重。
+    this.updateHead(world, humanoid);
+
+    // ============ 2) 四肢：单方向对齐（参考实现同样不解四肢 twist） ============
     for (const seg of SEGMENTS) {
       const bone = humanoid.getNormalizedBoneNode(seg.bone);
       const rest = this.restDir.get(seg.bone);
@@ -271,6 +275,68 @@ export class Retargeter {
       this.applySmoothed(bone, seg.bone, targetQuat);
     }
     return true;
+  }
+
+  /**
+   * 颈/头重定向（移植 kiarina 的面部 head basis，源点换成 Pose 的鼻+双耳）。
+   * 用「鼻→耳中」作前上方向、「右耳−左耳」作左右轴，建正交 basis 得到头部世界姿态，
+   * 再按 neck 0.35 / head 0.65 分配（世界 slerp 后转父本地写入），
+   * 与 kiarina 的 updateHead 同构。确定性保证头朝上、不翻扣进胸口。
+   */
+  private updateHead(
+    world: { x: number; y: number; z: number; visibility?: number }[],
+    humanoid: VRMHumanoid,
+  ): void {
+    // 关键点可见性过滤（鼻/双耳/双肩/双髋）
+    const need = [0, 7, 8, 11, 12, 23, 24];
+    let vis = 0;
+    let n = 0;
+    for (const i of need) {
+      const l = world[i];
+      if (l) {
+        vis += l.visibility ?? 0;
+        n++;
+      }
+    }
+    if (n === 0 || vis / n < this.minVisibility) return;
+
+    const leftEar = this.toVec(world, 7);
+    const rightEar = this.toVec(world, 8);
+    const nose = this.toVec(world, 0);
+    const earMid = leftEar.clone().add(rightEar).multiplyScalar(0.5);
+
+    // x 轴：右耳−左耳（左右/翻滚）；fwd：鼻−耳中（前上方向，默认朝上，点头下倾）
+    const xAxis = rightEar.clone().sub(leftEar);
+    const fwd = nose.clone().sub(earMid);
+    if (xAxis.lengthSq() < 1e-6 || fwd.lengthSq() < 1e-6) return;
+    xAxis.normalize();
+    fwd.normalize();
+
+    // 取 fwd 去掉 x 分量后的竖直分量作为头部 up：保证默认朝上，点头时下倾
+    const xComp = fwd.dot(xAxis);
+    const yAxis = fwd.clone().sub(xAxis.clone().multiplyScalar(xComp)).normalize();
+    if (yAxis.lengthSq() < 1e-6) return;
+    const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
+    const yOrth = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+
+    const basis = new THREE.Matrix4().makeBasis(xAxis, yOrth, zAxis);
+    const headWorld = new THREE.Quaternion().setFromRotationMatrix(basis);
+
+    const parentQ = new THREE.Quaternion();
+    const dist = new THREE.Quaternion();
+    for (const [boneName, weight] of [
+      ['neck', 0.35],
+      ['head', 0.65],
+    ] as Array<[VRMHumanBoneName, number]>) {
+      const bone = humanoid.getNormalizedBoneNode(boneName);
+      if (!bone) continue;
+      const parent = bone.parent;
+      if (parent) parent.getWorldQuaternion(parentQ);
+      else parentQ.identity();
+      // 世界姿态按权重 slerp（从 identity 朝 headWorld 插值），再转父本地写入
+      dist.copy(parentQ).invert().multiply(new THREE.Quaternion().slerp(headWorld, weight));
+      this.applySmoothed(bone, boneName, dist);
+    }
   }
 
   /**
