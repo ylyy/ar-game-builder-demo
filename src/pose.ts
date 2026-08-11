@@ -11,12 +11,12 @@ const MODEL_URL = import.meta.env.BASE_URL + 'models/holistic_landmarker.task';
 
 /**
  * 封装 MediaPipe Holistic Landmarker 的初始化与逐帧检测。
- * 一次输出四路数据：Pose 33 点(world) + FaceMesh 468 点(归一化) + 左右手各 21 点(world)
- * + 52 个面部 blendshape（眨眼/嘴型/表情），对应 kiarina/labs 参考实现的识别层。
+ * 一次输出：pose 33 点（归一化 + 米制 world）、face 478 点、双手各 21 点，
+ * 供 kalidokit 做 躯干/头部/表情/手指 的完整重定向。
  *
- * 注意 delegate 选择：**固定用 CPU**（与 kiarina 参考实现一致，其未指定 delegate 即 CPU）。
- * Holistic 模型体积大，WebGL/GPU delegate 在部分机器（尤其手机）上创建成功但推理时
- * 静默返回空结果，正是"识别不到关键点"的高频根因。CPU 在 Mac 实测 170+ FPS，足够用。
+ * delegate 固定 CPU：与 kiarina 参考实现一致（未指定即 CPU），避免 WebGL/GPU
+ * 在部分机器（尤其手机）上创建成功但推理静默返回空。Holistic 模型较大，
+ * 若帧率不足可后续尝试 delegate: 'GPU' 对比。
  */
 export class HolisticDetector {
   private landmarker: HolisticLandmarker;
@@ -28,15 +28,14 @@ export class HolisticDetector {
 
   static async create(): Promise<HolisticDetector> {
     const fileset = await FilesetResolver.forVisionTasks(WASM_URL);
+
     const landmarker = await HolisticLandmarker.createFromOptions(fileset, {
       baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
       runningMode: 'VIDEO',
-      outputFaceBlendshapes: true,
-      outputPoseSegmentationMasks: false,
-      minFaceDetectionConfidence: 0.5,
-      minFacePresenceConfidence: 0.5,
       minPoseDetectionConfidence: 0.5,
       minPosePresenceConfidence: 0.5,
+      minFaceDetectionConfidence: 0.5,
+      minFacePresenceConfidence: 0.5,
       minHandLandmarksConfidence: 0.5,
     });
     return new HolisticDetector(landmarker);

@@ -12,6 +12,7 @@
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.14",
     "@pixiv/three-vrm": "^3.4.0",
+    "kalidokit": "^1.1.5",
     "three": "^0.160.1"
   },
   "devDependencies": {
