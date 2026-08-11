@@ -345,6 +345,10 @@ export class Retargeter {
    * 主算法用面部 4 点：234/454 左右眼外角（x 轴）、10 额头/152 下巴（y 轴）建正交 basis，
    * 再按 neck 0.35 / head 0.65 分配（世界 slerp 后转父本地写入）。
    * 面部不可靠（<455 点）时回退到 Pose 鼻+双耳近似，保证头朝上不翻扣。
+   *
+   * ⚠️ 关键约定：zAxis 用 `yAxis.cross(xAxis)`（而非 kiarina 的 `xAxis.cross(yAxis)`），
+   * 让 zAxis 朝向 +Z（指向相机）——VRM 模型在 three.js 默认相机下 T-pose 面朝 -Z，
+   * 反向 z 会把头部绕 Y 转 180°、脸朝后（用户截图已确认此 bug）。躯干因为 T-pose 左右对称看不出来，头部因为有正反面立刻暴露。
    */
   private updateHead(frame: MotionFrame, humanoid: VRMHumanoid): void {
     const face = frame.face;
@@ -355,7 +359,8 @@ export class Retargeter {
       const chin = this.toVec(face, 152);
       const xAxis = right.clone().sub(left).normalize();
       const yAxis = forehead.clone().sub(chin).normalize();
-      const zAxis = xAxis.clone().cross(yAxis).normalize();
+      // zAxis 朝向 +Z（指向相机），让头部基础朝向与 VRM 模型 T-pose 一致
+      const zAxis = yAxis.clone().cross(xAxis).normalize();
       if (zAxis.lengthSq() < 1e-8) return;
       yAxis.copy(zAxis).cross(xAxis).normalize();
       const basis = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
@@ -398,7 +403,8 @@ export class Retargeter {
     const xComp = fwd.dot(xAxis);
     const yAxis = fwd.clone().sub(xAxis.clone().multiplyScalar(xComp)).normalize();
     if (yAxis.lengthSq() < 1e-6) return;
-    const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
+    // zAxis 朝向 +Z（指向相机），与 VRM 模型 T-pose 一致——勿再用 xAxis×yAxis（会得 -Z 让头转 180°）
+    const zAxis = new THREE.Vector3().crossVectors(yAxis, xAxis).normalize();
     const yOrth = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
 
     const basis = new THREE.Matrix4().makeBasis(xAxis, yOrth, zAxis);
