@@ -169,6 +169,12 @@ async function boot(): Promise<void> {
       // 组装 MotionFrame：pose/双手用 worldLandmarks，face 用归一化 faceLandmarks
       //（与 kiarina 参考实现一致：face 是图像坐标，blendshapes 是表情系数）
       const pose = res.poseWorldLandmarks?.[0];
+      // 视觉反馈：同时画 pose/face/hands 三套点，哪路没检测到一眼可见
+      clearOverlay();
+      drawOverlay(res.poseLandmarks?.[0] ?? [], '#3fb950');
+      drawOverlay(res.faceLandmarks?.[0] ?? [], '#6fa7ff');
+      drawOverlay(res.leftHandLandmarks?.[0] ?? [], '#ed93b1');
+      drawOverlay(res.rightHandLandmarks?.[0] ?? [], '#ed93b1');
       if (pose && pose.length >= 33) {
         const frame: MotionFrame = {
           pose,
@@ -178,7 +184,7 @@ async function boot(): Promise<void> {
           blendshapes: res.faceBlendshapes?.[0]?.categories ?? [],
         };
         const updated = retargeter.update(frame);
-        if (updated && res.poseLandmarks?.[0]) drawOverlay(res.poseLandmarks[0]);
+        if (!updated) drawOverlay([], '#3fb950'); // 清空旧点，避免残留
       }
     }
     stage.render();
@@ -192,7 +198,12 @@ async function boot(): Promise<void> {
     frames++;
     const now = performance.now();
     if (now - lastFps > 500) {
-      fpsEl.textContent = `${Math.round((frames * 1000) / (now - lastFps))} FPS`;
+      const poseN = res?.poseLandmarks?.length ?? 0;
+      const faceN = res?.faceLandmarks?.length ?? 0;
+      const lh = res?.leftHandLandmarks?.length ?? 0;
+      const rh = res?.rightHandLandmarks?.length ?? 0;
+      fpsEl.textContent = `${Math.round((frames * 1000) / (now - lastFps))} FPS | P:${poseN} F:${faceN} H:${lh}/${rh}`;
+      console.info(`[holistic] pose=${poseN} face=${faceN} Lhand=${lh} Rhand=${rh}`);
       frames = 0;
       lastFps = now;
     }
@@ -200,17 +211,23 @@ async function boot(): Promise<void> {
   loop();
 }
 
-/** 在右上角小窗里画出检测到的关键点，作为视觉反馈 */
-function drawOverlay(landmarks: { x: number; y: number }[]): void {
+/** 清空并重置 overlay 画布（每帧先调用，避免残影） */
+function clearOverlay(): void {
   const w = overlay.clientWidth || video.clientWidth;
   const h = overlay.clientHeight || video.clientHeight;
   if (overlay.width !== w || overlay.height !== h) {
     overlay.width = w;
     overlay.height = h;
   }
+  overlay.getContext('2d')!.clearRect(0, 0, w, h);
+}
+
+/** 在右上角小窗里画出某一套关键点，作为视觉反馈（颜色区分 pose/face/hands） */
+function drawOverlay(landmarks: { x: number; y: number }[], color: string): void {
+  const w = overlay.clientWidth || video.clientWidth;
+  const h = overlay.clientHeight || video.clientHeight;
   const ctx = overlay.getContext('2d')!;
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#3fb950';
+  ctx.fillStyle = color;
   for (const p of landmarks) {
     ctx.fillRect(p.x * w - 2, p.y * h - 2, 4, 4);
   }
