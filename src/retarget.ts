@@ -6,6 +6,15 @@ import type { TPose, TFace } from 'kalidokit';
 
 const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
 
+// landmark 的最小结构（x/y/z + 可选 visibility/score），兼容 tasks-vision 的
+// NormalizedLandmark / Landmark
+interface LandmarkLike {
+  x: number;
+  y: number;
+  z: number;
+  visibility?: number;
+}
+
 // 所有被 kalidokit 驱动的骨骼（躯干 + 头颈 + 四肢 + 手指），
 // 用于 reset / applyRestPose / 平滑状态管理。
 // 手指骨骼名与 kalidokit Hand 输出（LeftThumbProximal…）经
@@ -67,6 +76,18 @@ export class Retargeter {
   // 平滑后的眼球角度缓存
   private lookYaw = 0;
   private lookPitch = 0;
+  // 平滑后的髋部世界位移（vtube-sol 同款：身体重心跟随画面中的髋中心）
+  private hipPos = new THREE.Vector3(0, 0, 0);
+
+  // landmark 级时间平滑缓存（等效旧版 holistic 的 smoothLandmarks:true，
+  // 新版 tasks-vision 无此选项，需自行实现，否则动作抖动不精确）
+  private lmCache: {
+    pose3d: LandmarkLike[] | null;
+    pose2d: LandmarkLike[] | null;
+    face: LandmarkLike[] | null;
+    leftHand: LandmarkLike[] | null;
+    rightHand: LandmarkLike[] | null;
+  } = { pose3d: null, pose2d: null, face: null, leftHand: null, rightHand: null };
 
   constructor(vrm: VRM, opts?: { mirrorX?: boolean; flipY?: boolean }) {
     this.vrm = vrm;
@@ -157,22 +178,49 @@ export class Retargeter {
     if (!pose2dRaw || !pose3dRaw) return false;
     if (!this.vrm.humanoid) return false;
 
-    // 镜像/翻转：仅在开关开启时翻转输入坐标（归一化 x→1-x，world x→-x）
-    // 注意：kalidokit 的 video 参数只接受元素或 null（传对象会取 videoWidth 变 NaN），
-    // null 时 imageSize 保持未缩放，用归一化坐标计算（mediapipe 模式本就归一化，可接受）。
-    const vid = this.video;
-    const flip = <T extends { x: number; y: number; z: number }>(lm: T[], normalized: boolean): T[] => {
-      if (!this.mirrorX && !this.flipY) return lm;
-      return lm.map((p) => ({
+    // landmark 级时间平滑（等效旧版 holistic smoothLandmarks:true，抗抖的关键）。
+    // 每帧对原始 landmark 做指数平滑后生成新数组；kalidokit 的 solve 会原地修改
+    // 传入数组（mediapipe 模式乘 imageSize），所以必须传副本。
+    const smooth = (key: keyof Retargeter['lmCache'], lm: LandmarkLike[]): LandmarkLike[] => {
+      const prev = this.lmCache[key];
+      if (!prev || prev.length !== lm.length) {
+        this.lmCache[key] = lm.map((p) => ({ ...p }));
+        return this.lmCache[key] as LandmarkLike[];
+      }
+      const out = lm.map((p, i) => {
+        const q = prev[i];
+        return {
+          x: q.x + (p.x - q.x) * 0.5,
+          y: q.y + (p.y - q.y) * 0.5,
+          z: q.z + (p.z - q.z) * 0.5,
+          visibility: p.visibility,
+        };
+      });
+      this.lmCache[key] = out;
+      return out;
+    };
+    const pose3d = smooth('pose3d', pose3dRaw);
+    const pose2d = smooth('pose2d', pose2dRaw);
+    const face = faceRaw ? smooth('face', faceRaw) : null;
+    const leftHand = leftHandRaw ? smooth('leftHand', leftHandRaw) : null;
+    const rightHand = rightHandRaw ? smooth('rightHand', rightHandRaw) : null;
+
+    // 镜像/翻转：仅在开关开启时翻转输入坐标（归一化 x→1-x，world x→-x）。
+    // 注意：kalidokit 的 video 参数只接受元素或 null（传对象会取 videoWidth 变 NaN）；
+    // 且 Face.solve 在 mediapipe 模式会原地把归一化坐标乘 imageSize.width，
+    // 因此 video 未就绪（videoWidth=0）时必须传 null，否则 landmark 全乘 0 → 头部/表情全乱。
+    // flip 始终返回新数组：防止 kalidokit 原地修改污染 lmCache（平滑缓存必须保持原始坐标）。
+    const vid = this.video && this.video.videoWidth > 0 ? this.video : null;
+    const flip = <T extends { x: number; y: number; z: number }>(lm: T[], normalized: boolean): T[] =>
+      lm.map((p) => ({
         ...p,
         x: this.mirrorX ? (normalized ? 1 - p.x : -p.x) : p.x,
         y: this.flipY ? (normalized ? 1 - p.y : -p.y) : p.y,
       }));
-    };
 
     // 表情/头部
-    if (faceRaw) {
-      const rig = Kalidokit.Face.solve(flip(faceRaw, true), {
+    if (face) {
+      const rig = Kalidokit.Face.solve(flip(face, true), {
         runtime: 'mediapipe',
         video: vid,
       });
@@ -181,19 +229,19 @@ export class Retargeter {
 
     // 躯干/四肢
     const rig = Kalidokit.Pose.solve(
-      flip(pose3dRaw, false),
-      flip(pose2dRaw, true),
+      flip(pose3d, false),
+      flip(pose2d, true),
       { runtime: 'mediapipe', video: vid, enableLegs: true },
     );
-    if (rig) this.applyPose(rig, pose2dRaw);
+    if (rig) this.applyPose(rig, pose2d);
 
     // 手指（左右手分开解算；kalidokit 按 side 决定旋转方向）
-    if (leftHandRaw) {
-      const rig = Kalidokit.Hand.solve(flip(leftHandRaw, true), 'Left');
+    if (leftHand) {
+      const rig = Kalidokit.Hand.solve(flip(leftHand, true), 'Left');
       if (rig) this.applyHand(rig);
     }
-    if (rightHandRaw) {
-      const rig = Kalidokit.Hand.solve(flip(rightHandRaw, true), 'Right');
+    if (rightHand) {
+      const rig = Kalidokit.Hand.solve(flip(rightHand, true), 'Right');
       if (rig) this.applyHand(rig);
     }
     return true;
@@ -251,8 +299,23 @@ export class Retargeter {
   private applyPose(rig: TPose, lms: { visibility?: number }[]): void {
     const vis = (i: number): number => lms?.[i]?.visibility ?? 0;
 
-    // hips：只旋转、不驱动 position（位置由 scene.userOffset 拖拽控制）
-    if (rig.Hips?.rotation) this.lerp(this.bone('hips'), rig.Hips.rotation, 0.07);
+    // 髋部：旋转 + 位置（vtube-sol 同款——身体重心跟随画面中的髋中心，
+    // 这是"动作跟手"的关键：人往左偏角色左移、弯腰时躯干有位移感）
+    const hips = this.bone('hips');
+    if (hips && rig.Hips) {
+      const p = rig.Hips.position;
+      if (p) {
+        // kalidokit 的 Hips.position 是画面归一化量级（x≈±0.6、z≈-1~0），
+        // 直接照搬 vtube-sol 的映射（x 直取、z 取反、y 恒 0），
+        // 但加 0.5 缩放避免角色位移过大冲出场景；y 保持 0——
+        // 垂直定位由 scene.userOffset（拖拽）控制，不在这里抬升角色。
+        const SCALE = 0.5;
+        this.hipPos.x = THREE.MathUtils.lerp(this.hipPos.x, p.x * SCALE, 0.08);
+        this.hipPos.z = THREE.MathUtils.lerp(this.hipPos.z, -p.z * SCALE, 0.08);
+        hips.position.copy(this.hipPos);
+      }
+      if (rig.Hips.rotation) this.lerp(hips, rig.Hips.rotation, 0.07);
+    }
 
     // 躯干：kalidokit 只给 Spine，spine/chest 都吃它（vtube-sol 的 ?? 兜底）
     this.lerp(this.bone('spine'), rig.Spine, 0.12);
@@ -316,6 +379,9 @@ export class Retargeter {
       if (bn) bn.quaternion.identity();
     }
     this.vrm.humanoid?.getNormalizedBoneNode('hips')?.position.set(0, 0, 0);
+    this.hipPos.set(0, 0, 0);
+    // 清空 landmark 平滑缓存（避免从旧姿态"弹回"）
+    this.lmCache = { pose3d: null, pose2d: null, face: null, leftHand: null, rightHand: null };
     // 表情清零
     this.exprCache.clear();
     const exp = this.vrm.expressionManager;
